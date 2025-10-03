@@ -1,135 +1,181 @@
 import os
+import json
+import hashlib
+import datetime
 import streamlit as st
-import openai
-from datetime import datetime
 from streamlit_webrtc import webrtc_streamer, AudioProcessorBase, WebRtcMode
+from openai import OpenAI
 
-# ======================
-# CONFIG
-# ======================
-st.set_page_config(page_title="EchoSoul", layout="wide")
-st.sidebar.title("📌 Navigation")
-page = st.sidebar.radio("Go to:", ["Chat", "Chat History", "Life Timeline", "Vault", "Export", "Brain Mimic", "About"])
+# --------------------------
+# Initialize
+# --------------------------
+st.set_page_config(page_title="EchoSoul", layout="wide", page_icon="💫")
 
-# Load OpenAI API key
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    st.error("⚠️ Please set your OpenAI API key in Streamlit Secrets or environment variables.")
-openai.api_key = OPENAI_API_KEY
+# Load OpenAI key
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    st.sidebar.error("⚠️ Missing OpenAI API key. Please set OPENAI_API_KEY in your secrets.")
+else:
+    client = OpenAI(api_key=api_key)
 
-# Memory storage
-if "history" not in st.session_state:
-    st.session_state.history = []
+# Persistent session storage
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 if "timeline" not in st.session_state:
     st.session_state.timeline = []
+if "vault_unlocked" not in st.session_state:
+    st.session_state.vault_unlocked = False
+if "vault" not in st.session_state:
+    st.session_state.vault = []
 
+# --------------------------
+# Sidebar Navigation
+# --------------------------
+st.sidebar.title("📌 Navigation")
+menu = st.sidebar.radio("Go to:", ["Chat", "Chat History", "Life Timeline", "Vault", "Export", "Brain Mimic", "About"])
 
-# ======================
-# AI RESPONSE GENERATION
-# ======================
-def generate_ai_response(prompt: str) -> str:
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are EchoSoul, a personal AI that adapts to the user."},
-                {"role": "user", "content": prompt},
-            ]
-        )
-        return response.choices[0].message["content"]
-    except Exception as e:
-        return f"(AI Error) {str(e)}"
-
-
-# ======================
-# CHAT PAGE
-# ======================
-if page == "Chat":
-    st.title("💬 EchoSoul Chat")
-
-    user_input = st.text_input("Say something to EchoSoul:")
-    if st.button("Send") and user_input:
-        ai_response = generate_ai_response(user_input)
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        st.session_state.history.append({"time": timestamp, "user": user_input, "ai": ai_response})
-        st.session_state.timeline.append({"time": timestamp, "event": f"You: {user_input} | EchoSoul: {ai_response}"})
-
-    for chat in reversed(st.session_state.history):
-        st.markdown(f"**You:** {chat['user']}")
-        st.markdown(f"**EchoSoul:** {chat['ai']}")
-        st.markdown("---")
-
-
-# ======================
-# CHAT HISTORY
-# ======================
-elif page == "Chat History":
-    st.title("📖 Chat History")
-    for chat in st.session_state.history:
-        st.markdown(f"**[{chat['time']}] You:** {chat['user']}")
-        st.markdown(f"**EchoSoul:** {chat['ai']}")
-        st.markdown("---")
-
-
-# ======================
-# LIFE TIMELINE
-# ======================
-elif page == "Life Timeline":
-    st.title("⏳ Life Timeline")
-    for event in st.session_state.timeline:
-        st.markdown(f"**[{event['time']}]** {event['event']}")
-        st.markdown("---")
-
-
-# ======================
-# VAULT
-# ======================
-elif page == "Vault":
-    st.title("🔐 Vault")
-    st.info("A secure place for your important memories (demo).")
-
-
-# ======================
-# EXPORT
-# ======================
-elif page == "Export":
-    st.title("📤 Export Your Data")
-    st.download_button(
-        "Download Chat History",
-        data=str(st.session_state.history),
-        file_name="echosoul_history.txt"
-    )
-
-
-# ======================
-# BRAIN MIMIC
-# ======================
-elif page == "Brain Mimic":
-    st.title("🧠 Brain Mimic")
-    st.info("This feature will simulate your personality based on chat history (demo).")
-
-
-# ======================
-# ABOUT
-# ======================
-elif page == "About":
-    st.title("ℹ️ About EchoSoul")
-    st.write("EchoSoul is your personal adaptive AI. It remembers, adapts, and grows with you.")
-
-
-# ======================
-# VOICE CALL (BETA)
-# ======================
 st.sidebar.markdown("----")
 st.sidebar.subheader("📞 Live Voice Call (Beta)")
+st.sidebar.write("Voice features unavailable (may require extra setup).")
 
-class AudioProcessor(AudioProcessorBase):
-    def recv_audio(self, frame):
-        return frame
+# --------------------------
+# Main Pages
+# --------------------------
 
+# --- Chat Page ---
+if menu == "Chat":
+    st.title("💬 EchoSoul Chat")
+
+    user_input = st.text_input("Say something to EchoSoul:", key="chat_input")
+    if st.button("Send"):
+        if not api_key:
+            st.error("❌ Missing API key. Please add your OpenAI key in Streamlit Secrets.")
+        elif user_input.strip() == "":
+            st.warning("Please type something first.")
+        else:
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are EchoSoul, a personal AI that adapts, remembers, and reflects the user."},
+                        {"role": "user", "content": user_input}
+                    ]
+                )
+                reply = response.choices[0].message.content
+
+                st.session_state.chat_history.append({"user": user_input, "ai": reply})
+                st.session_state.timeline.append({"time": str(datetime.datetime.now()), "event": f"Chatted: {user_input}"})
+
+                st.markdown(f"**You:** {user_input}")
+                st.markdown(f"**EchoSoul:** {reply}")
+
+            except Exception as e:
+                st.error(f"(AI Error) {str(e)}")
+
+# --- Chat History ---
+elif menu == "Chat History":
+    st.title("📜 Chat History")
+    if st.session_state.chat_history:
+        for i, chat in enumerate(st.session_state.chat_history):
+            st.markdown(f"**You:** {chat['user']}")
+            st.markdown(f"**EchoSoul:** {chat['ai']}")
+            st.markdown("---")
+    else:
+        st.info("No chat history yet.")
+
+# --- Life Timeline ---
+elif menu == "Life Timeline":
+    st.title("🧭 Life Timeline")
+    if st.session_state.timeline:
+        for event in st.session_state.timeline:
+            st.write(f"{event['time']} - {event['event']}")
+    else:
+        st.info("No timeline events recorded yet.")
+
+# --- Vault ---
+elif menu == "Vault":
+    st.title("🔐 Private Vault")
+
+    if not st.session_state.vault_unlocked:
+        password = st.text_input("Enter vault password:", type="password")
+        if st.button("Unlock Vault"):
+            hashed = hashlib.sha256(password.encode()).hexdigest()
+            if hashed == hashlib.sha256("mysecret".encode()).hexdigest():  # demo password
+                st.session_state.vault_unlocked = True
+                st.success("✅ Vault unlocked!")
+            else:
+                st.error("❌ Incorrect password.")
+    else:
+        st.success("Vault is unlocked ✅")
+        note = st.text_area("Add a secret memory:")
+        if st.button("Save Memory"):
+            st.session_state.vault.append({"time": str(datetime.datetime.now()), "memory": note})
+        st.subheader("Stored Memories")
+        for mem in st.session_state.vault:
+            st.write(f"{mem['time']}: {mem['memory']}")
+
+# --- Export ---
+elif menu == "Export":
+    st.title("📤 Export Data")
+    data = {
+        "chat_history": st.session_state.chat_history,
+        "timeline": st.session_state.timeline,
+        "vault": st.session_state.vault
+    }
+    st.download_button("Download My Data", data=json.dumps(data, indent=2), file_name="echosoul_data.json")
+
+# --- Brain Mimic ---
+elif menu == "Brain Mimic":
+    st.title("🧠 Brain Mimic")
+    st.info("EchoSoul will reply as if it were you, using your stored chats & memories.")
+
+    mimic_input = st.text_input("Ask EchoSoul-as-You something:")
+    if st.button("Mimic Reply"):
+        if not api_key:
+            st.error("❌ Missing API key.")
+        else:
+            try:
+                context = "\n".join([f"You: {c['user']} / AI: {c['ai']}" for c in st.session_state.chat_history[-10:]])
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": f"Imitate the user’s personality based on this history:\n{context}"},
+                        {"role": "user", "content": mimic_input}
+                    ]
+                )
+                reply = response.choices[0].message.content
+                st.markdown(f"**EchoSoul-as-You:** {reply}")
+            except Exception as e:
+                st.error(f"(AI Error) {str(e)}")
+
+# --- About ---
+elif menu == "About":
+    st.title("ℹ️ About EchoSoul")
+    st.write("""
+    EchoSoul is your evolving AI companion:
+    - Persistent Memory
+    - Adaptive Personality
+    - Emotion Recognition
+    - Life Timeline
+    - Vault (encrypted memories)
+    - Brain Mimic
+    - Live Voice (beta)
+    - Legacy Mode (coming soon)
+    """)
+
+# --------------------------
+# Voice Call (Beta)
+# --------------------------
+def audio_callback(frame):
+    # Placeholder for actual voice AI integration
+    return frame
+
+st.sidebar.markdown("----")
+st.sidebar.write("🎙️ Try Live Voice (Beta)")
 webrtc_streamer(
     key="voice",
     mode=WebRtcMode.SENDRECV,
-    audio_processor_factory=AudioProcessor,
-    media_stream_constraints={"audio": True, "video": False}
+    audio_receiver_size=256,
+    media_stream_constraints={"audio": True, "video": False},
+    async_processing=True,
 )
