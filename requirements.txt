@@ -4,7 +4,6 @@ pandas==2.2.2
 numpy==1.26.4
 cryptography==41.0.7
 streamlit-webrtc==0.47.1
-agora-token-builder==1.0.0
 aiortc==1.7.1
 Pillow==10.2.0
 python-dotenv==1.0.1
