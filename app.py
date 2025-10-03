@@ -3,8 +3,11 @@ import json
 import hashlib
 import datetime
 import streamlit as st
-from streamlit_webrtc import webrtc_streamer, WebRtcMode
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 from openai import OpenAI
+import speech_recognition as sr
+from gtts import gTTS
+import tempfile
 
 # --------------------------
 # Page Config
@@ -44,7 +47,6 @@ menu = st.sidebar.radio(
 
 st.sidebar.markdown("----")
 st.sidebar.subheader("📞 Live Voice Call (Beta)")
-st.sidebar.write("Voice features unavailable (may require extra setup).")
 
 # --------------------------
 # Main Pages
@@ -193,16 +195,44 @@ elif menu == "About":
 # --------------------------
 # Voice Call (Beta)
 # --------------------------
-def audio_callback(frame):
-    # Placeholder for future speech-to-text & TTS integration
-    return frame
+class AudioProcessor(AudioProcessorBase):
+    def recv(self, frame):
+        # Capture audio frame → speech recognition
+        r = sr.Recognizer()
+        with sr.AudioFile(frame.to_ndarray().tobytes()) as source:
+            try:
+                text = r.recognize_google(r.record(source))
+                if text.strip():
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": "You are EchoSoul speaking in a natural voice."},
+                            {"role": "user", "content": text}
+                        ]
+                    )
+                    reply = response.choices[0].message.content
+
+                    # Save chat + timeline
+                    st.session_state.chat_history.append({"user": text, "ai": reply})
+                    st.session_state.timeline.append(
+                        {"time": str(datetime.datetime.now()), "event": f"Voice chat: {text}"}
+                    )
+
+                    # Convert reply to audio
+                    tts = gTTS(reply)
+                    tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+                    tts.save(tmpfile.name)
+                    st.audio(tmpfile.name, format="audio/mp3")
+            except Exception:
+                pass
+        return frame
 
 st.sidebar.markdown("----")
 st.sidebar.write("🎙️ Try Live Voice (Beta)")
 webrtc_streamer(
     key="voice",
     mode=WebRtcMode.SENDRECV,
-    audio_receiver_size=256,
+    audio_processor_factory=AudioProcessor,
     media_stream_constraints={"audio": True, "video": False},
     async_processing=True,
 )
