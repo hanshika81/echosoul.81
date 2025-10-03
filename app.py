@@ -1,277 +1,193 @@
-# EchoSoul - app.py (with GPT error logging + Call)
-
 import streamlit as st
-import sqlite3
+import pandas as pd
+import numpy as np
+import json
 import os
-import io
-import base64
-from datetime import datetime
-from typing import Optional, Tuple
+import datetime
+import random
+from pathlib import Path
+from dotenv import load_dotenv
+import openai
 
-# Optional imports
-try:
-    import openai
-except Exception:
-    openai = None
+# Load .env for API keys
+load_dotenv()
 
-try:
-    from cryptography.fernet import Fernet
-    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-    from cryptography.hazmat.primitives import hashes
-except Exception:
-    Fernet = None
-    PBKDF2HMAC = None
+# -----------------------------
+# Session state initialization
+# -----------------------------
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-try:
-    from gtts import gTTS
-except Exception:
-    gTTS = None
+if "timeline" not in st.session_state:
+    st.session_state.timeline = []
 
-try:
-    from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration, AudioProcessorBase
-    import av
-    WEBSOCKET_AVAILABLE = True
-except Exception:
-    webrtc_streamer = None
-    WebRtcMode = None
-    RTCConfiguration = None
-    AudioProcessorBase = object
-    av = None
-    WEBSOCKET_AVAILABLE = False
+if "memory" not in st.session_state:
+    st.session_state.memory = {}
 
+# -----------------------------
+# Helper functions
+# -----------------------------
+def analyze_emotion(text: str):
+    """Naive sentiment analysis fallback."""
+    positive_words = ["happy", "great", "good", "love", "awesome", "fantastic"]
+    negative_words = ["sad", "bad", "angry", "hate", "horrible", "upset"]
 
-# ---------------- DB init ----------------
-DB_PATH = "echosoul.db"
+    score = 0
+    txt = text.lower()
+    for w in positive_words:
+        if w in txt:
+            score += 1
+    for w in negative_words:
+        if w in txt:
+            score -= 1
 
-@st.cache_resource
-def init_db(db_path=DB_PATH):
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS chats (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  role TEXT,
-                  content TEXT,
-                  created_at TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS memories (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  title TEXT,
-                  content TEXT,
-                  tags TEXT,
-                  created_at TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS timeline (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  event TEXT,
-                  event_date TEXT,
-                  details TEXT,
-                  tags TEXT,
-                  created_at TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS vault (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  label TEXT,
-                  encrypted_blob TEXT,
-                  salt TEXT,
-                  created_at TEXT)''')
-    conn.commit()
-    return conn
-
-conn = init_db()
+    if score > 0:
+        return "positive", 1.0
+    elif score < 0:
+        return "negative", -1.0
+    return "neutral", 0.0
 
 
-# ------------- Utilities -------------
-_POS_WORDS = {"happy","great","awesome","love","joy","excited","pleased","good","fantastic","wonderful"}
-_NEG_WORDS = {"sad","angry","hate","terrible","upset","bad","depressed","annoyed","frustrated"}
-
-def detect_emotion_from_text(text: str) -> Tuple[str, float]:
-    text_l = text.lower()
-    score = sum(w in text_l for w in _POS_WORDS) - sum(w in text_l for w in _NEG_WORDS)
-    if score >= 2: return "happy", float(score)
-    if score <= -2: return "sad/angry", float(score)
-    if score == 1: return "positive", float(score)
-    if score == -1: return "negative", float(score)
-    return "neutral", float(score)
+def add_timeline_event(title: str, date: str, details: str):
+    """Save timeline event into session_state."""
+    st.session_state.timeline.append({
+        "title": title,
+        "date": date,
+        "details": details
+    })
 
 
-# ------------- Encryption (Vault) -------------
-def _derive_key(password: str, salt: bytes) -> bytes:
-    if PBKDF2HMAC is None:
-        raise RuntimeError("cryptography required")
-    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=390000)
-    return base64.urlsafe_b64encode(kdf.derive(password.encode()))
-
-def encrypt_text(plaintext: str, password: str) -> Tuple[str, str]:
-    salt = os.urandom(16)
-    key = _derive_key(password, salt)
-    f = Fernet(key)
-    token = f.encrypt(plaintext.encode())
-    return base64.b64encode(token).decode(), base64.b64encode(salt).decode()
-
-def decrypt_text(token_b64: str, password: str, salt_b64: str) -> str:
-    token = base64.b64decode(token_b64)
-    salt = base64.b64decode(salt_b64)
-    key = _derive_key(password, salt)
-    return Fernet(key).decrypt(token).decode()
-
-
-# ------------- DB helpers -------------
-def add_chat(role: str, content: str):
-    c = conn.cursor()
-    c.execute("INSERT INTO chats (role,content,created_at) VALUES (?,?,?)",
-              (role, content, datetime.utcnow().isoformat()))
-    conn.commit()
-
-def get_chats(limit=200):
-    c = conn.cursor()
-    c.execute("SELECT id,role,content,created_at FROM chats ORDER BY id DESC LIMIT ?", (limit,))
-    return list(reversed(c.fetchall()))
-
-def add_memory(title: str, content: str):
-    c = conn.cursor()
-    c.execute("INSERT INTO memories (title,content,tags,created_at) VALUES (?,?,?,?)",
-              (title, content, "", datetime.utcnow().isoformat()))
-    conn.commit()
-
-def get_recent_memories(limit=10):
-    c = conn.cursor()
-    c.execute("SELECT id,title,content FROM memories ORDER BY id DESC LIMIT ?", (limit,))
-    return c.fetchall()
-
-def add_timeline_event(event: str, event_date: str, details: str):
-    c = conn.cursor()
-    c.execute("INSERT INTO timeline (event,event_date,details,created_at) VALUES (?,?,?,?)",
-              (event, event_date, details, datetime.utcnow().isoformat()))
-    conn.commit()
-
-def get_timeline(limit=100):
-    c = conn.cursor()
-    c.execute("SELECT event,event_date,details FROM timeline ORDER BY event_date DESC LIMIT ?", (limit,))
-    return c.fetchall()
-
-
-# ------------- OpenAI helpers -------------
-def make_openai_client(api_key: Optional[str]):
-    if openai is None or not api_key:
-        return None
-    return openai.OpenAI(api_key=api_key)
-
-def openai_chat_reply(client, messages: list):
-    resp = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=messages
-    )
-    return resp.choices[0].message.content
-
-
-# ------------- TTS (gTTS fallback) -------------
-def tts_gtts_bytes(text: str):
-    if gTTS is None: return None
+def openai_chat_reply(messages: list, api_key: str):
+    """
+    Calls GPT using whichever OpenAI API version is available.
+    Compatible with openai <1.0 and >=1.0
+    """
     try:
-        tts = gTTS(text=text, lang="en")
-        fp = io.BytesIO()
-        tts.write_to_fp(fp)
-        fp.seek(0)
-        return fp.read()
-    except Exception:
-        return None
-
-
-# ------------- Reply generator -------------
-def generate_reply(client, user_text: str) -> str:
-    mems = get_recent_memories(6)
-    mem_text = "\n".join([f"- {m[1]}: {m[2]}" for m in mems])
-    sys_prompt = f"You are EchoSoul — a compassionate companion.\n\nRecent memories:\n{mem_text}"
-    messages = [{"role":"system","content":sys_prompt},{"role":"user","content":user_text}]
-    if client:
+        # Try new API
         try:
-            return openai_chat_reply(client, messages)
-        except Exception as e:
-            return f"(OpenAI error: {e})"
-    # fallback if no key
-    emo, score = detect_emotion_from_text(user_text)
-    return f"I heard you. You seem {emo} (score={score})."
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+            resp = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=messages
+            )
+            return resp.choices[0].message.content
+        except Exception:
+            # Fallback to old API
+            resp = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=messages,
+                api_key=api_key
+            )
+            return resp["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"(OpenAI error: {e})"
 
 
-# ---------------- Streamlit UI ----------------
+# -----------------------------
+# Streamlit App Layout
+# -----------------------------
 st.set_page_config(page_title="EchoSoul", layout="wide")
 
-with st.sidebar:
-    st.title("EchoSoul")
-    mode = st.radio("Mode", ["Chat","Chat history","Life timeline","Vault","Call","About"])
-    
-    # ✅ API key persists
-    if "openai_api_key" not in st.session_state:
-        st.session_state["openai_api_key"] = ""
-    api_key_input = st.text_input("OpenAI API Key", type="password", value=st.session_state["openai_api_key"])
-    if api_key_input:
-        st.session_state["openai_api_key"] = api_key_input
+st.sidebar.title("EchoSoul")
+st.sidebar.caption("Adaptive personal companion — chat, call, remember.")
 
+mode = st.sidebar.radio("Mode", ["Chat", "Chat history", "Life timeline", "Vault", "Export", "Brain mimic", "Call", "About"])
 
-# -------- Pages --------
+st.sidebar.markdown("### Settings")
+OPENAI_API_KEY = st.sidebar.text_input("OpenAI API Key", type="password")
+
+# -----------------------------
+# Modes
+# -----------------------------
 if mode == "Chat":
-    st.header("💬 Chat with EchoSoul")
-    chats = get_chats()
-    for _, role, content, _ in chats:
-        st.markdown(f"**{role}**: {content}")
-    with st.form("chat_form"):
-        user_text = st.text_area("Message", height=120)
-        send_btn = st.form_submit_button("Send")
-    if send_btn and user_text.strip():
-        add_chat("user", user_text)
-        client = make_openai_client(st.session_state.get("openai_api_key"))
-        reply = generate_reply(client, user_text)
-        add_chat("assistant", reply)
-        st.markdown(f"**assistant**: {reply}")
-        audio_bytes = tts_gtts_bytes(reply)
-        if audio_bytes:
-            st.audio(audio_bytes, format="audio/mp3")
-        st.rerun()
+    st.title("💬 Chat with EchoSoul")
+
+    user_input = st.text_area("Message", key="chat_input")
+
+    if st.button("Send", key="send_btn"):
+        if user_input.strip():
+            # Add user message to history
+            st.session_state.chat_history.append({"role": "user", "content": user_input})
+
+            # Analyze emotion
+            mood, score = analyze_emotion(user_input)
+
+            # Prepare messages for GPT
+            messages = [{"role": "system", "content": "You are EchoSoul, a supportive and adaptive companion."}]
+            for msg in st.session_state.chat_history:
+                messages.append({"role": msg["role"], "content": msg["content"]})
+
+            # GPT response if API key provided
+            if OPENAI_API_KEY:
+                reply = openai_chat_reply(messages, OPENAI_API_KEY)
+            else:
+                reply = f"I heard you. You seem {mood} (score={score})."
+
+            st.session_state.chat_history.append({"role": "assistant", "content": reply})
+
+            st.rerun()
+
+    # Display conversation
+    for msg in st.session_state.chat_history:
+        if msg["role"] == "user":
+            st.markdown(f"**user:** {msg['content']}")
+        else:
+            st.markdown(f"**assistant:** {msg['content']}")
 
 elif mode == "Chat history":
-    st.header("🗂 Chat History")
-    for _, role, content, created in get_chats(100):
-        st.write(f"{created[:19]} — **{role}**: {content}")
+    st.title("📜 Chat History")
+    if st.session_state.chat_history:
+        for msg in st.session_state.chat_history:
+            st.write(f"{msg['role']}: {msg['content']}")
+    else:
+        st.info("No chat history yet.")
 
 elif mode == "Life timeline":
-    st.header("📅 Life Timeline")
+    st.title("🗓️ Life Timeline")
+
     with st.form("timeline_form"):
-        ev_date = st.date_input("Event date", value=datetime.utcnow().date())
-        ev_title = st.text_input("Event title")
+        ev_title = st.text_input("Event Title")
+        ev_date = st.date_input("Date", datetime.date.today())
         ev_details = st.text_area("Details")
-        if st.form_submit_button("Add event"):
-            add_timeline_event(ev_title, ev_date.isoformat(), ev_details)
-            st.success("Event added")
-            st.rerun()
-    st.write("### Timeline")
-    for ev, date, details in get_timeline():
-        st.write(f"**{date}** - {ev}\n{details}")
+        submit = st.form_submit_button("Save Event")
+
+    if submit:
+        add_timeline_event(ev_title, ev_date.isoformat(), ev_details)
+        st.success("Event added to timeline")
+        st.rerun()
+
+    if st.session_state.timeline:
+        st.write("### Your Timeline")
+        for ev in st.session_state.timeline:
+            st.markdown(f"- **{ev['date']}**: {ev['title']} — {ev['details']}")
+    else:
+        st.info("No events yet.")
 
 elif mode == "Vault":
-    st.header("🔐 Vault")
-    pw = st.text_input("Vault password", type="password")
-    if pw:
-        st.info("Vault feature ready (encryption enabled).")
+    st.title("🔐 Memory Vault")
+    if st.session_state.memory:
+        st.json(st.session_state.memory)
+    else:
+        st.info("Memory is empty.")
+
+elif mode == "Export":
+    st.title("📤 Export Data")
+    data = {
+        "chat_history": st.session_state.chat_history,
+        "timeline": st.session_state.timeline,
+        "memory": st.session_state.memory,
+    }
+    st.download_button("Download JSON", data=json.dumps(data, indent=2), file_name="echosoul_data.json")
+
+elif mode == "Brain mimic":
+    st.title("🧠 Brain Mimic")
+    st.info("This feature will simulate your tone and speaking style in future updates.")
 
 elif mode == "Call":
-    st.header("📞 Live Call with EchoSoul")
-    if not WEBSOCKET_AVAILABLE:
-        st.error("streamlit-webrtc not installed. Please check requirements.")
-    else:
-        class EchoSoulProcessor(AudioProcessorBase):
-            def __init__(self):
-                self.client = make_openai_client(st.session_state.get("openai_api_key"))
-
-            def recv_audio(self, frame):
-                # For now: just echo input audio
-                return frame
-
-        webrtc_streamer(
-            key="echosoul-call",
-            mode=WebRtcMode.SENDRECV,
-            rtc_configuration=RTCConfiguration({"iceServers":[{"urls":["stun:stun.l.google.com:19302"]}]}),
-            audio_processor_factory=EchoSoulProcessor,
-            media_stream_constraints={"audio": True, "video": False},
-        )
-        st.info("🎤 Speak into your mic. EchoSoul will echo audio. GPT+TTS integration coming next.")
+    st.title("📞 Call (Prototype)")
+    st.info("VoIP calling (Agora) integration coming soon!")
 
 elif mode == "About":
-    st.header("ℹ️ About EchoSoul")
-    st.write("EchoSoul is your adaptive personal AI companion — chat, call, remember, grow.")
+    st.title("ℹ️ About EchoSoul")
+    st.write("EchoSoul is your adaptive companion: remembers, reflects, and grows with you.")
