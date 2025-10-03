@@ -1,9 +1,9 @@
 import streamlit as st
-import openai
 import os
 import json
 import datetime
 import hashlib
+import base64
 from cryptography.fernet import Fernet
 from textblob import TextBlob
 import pandas as pd
@@ -22,9 +22,12 @@ except ImportError:
 st.set_page_config(page_title="EchoSoul", page_icon="💠", layout="wide")
 
 # API Key
+from openai import OpenAI
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY", "")
+client = None
 if OPENAI_API_KEY:
-    openai.api_key = OPENAI_API_KEY
+    client = OpenAI(api_key=OPENAI_API_KEY)
 
 # ---------------- STATE INIT ----------------
 if "chat_history" not in st.session_state:
@@ -57,11 +60,15 @@ def decrypt_message(token, password):
     return fernet.decrypt(token.encode()).decode()
 
 def generate_ai_response(prompt):
+    if not client:
+        return "(AI Error) No API key provided."
     try:
-        completion = openai.chat.completions.create(
+        completion = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "system", "content": "You are EchoSoul, a personal AI that adapts to the user."}] +
-                     [{"role": "user", "content": prompt}]
+            messages=[
+                {"role": "system", "content": "You are EchoSoul, a personal AI that adapts to the user."},
+                {"role": "user", "content": prompt}
+            ]
         )
         return completion.choices[0].message.content
     except Exception as e:
