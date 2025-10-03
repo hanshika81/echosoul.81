@@ -1,4 +1,4 @@
-# EchoSoul - app.py (Final full version with Call)
+# EchoSoul - app.py (with GPT error logging + Call)
 
 import streamlit as st
 import sqlite3
@@ -154,7 +154,10 @@ def make_openai_client(api_key: Optional[str]):
     return openai.OpenAI(api_key=api_key)
 
 def openai_chat_reply(client, messages: list):
-    resp = client.chat.completions.create(model="gpt-3.5-turbo", messages=messages)
+    resp = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=messages
+    )
     return resp.choices[0].message.content
 
 
@@ -180,8 +183,9 @@ def generate_reply(client, user_text: str) -> str:
     if client:
         try:
             return openai_chat_reply(client, messages)
-        except:
-            pass
+        except Exception as e:
+            return f"(OpenAI error: {e})"
+    # fallback if no key
     emo, score = detect_emotion_from_text(user_text)
     return f"I heard you. You seem {emo} (score={score})."
 
@@ -193,8 +197,10 @@ with st.sidebar:
     st.title("EchoSoul")
     mode = st.radio("Mode", ["Chat","Chat history","Life timeline","Vault","Call","About"])
     
-    # ✅ FIX: Keep API key in session
-    api_key_input = st.text_input("OpenAI API Key", type="password")
+    # ✅ API key persists
+    if "openai_api_key" not in st.session_state:
+        st.session_state["openai_api_key"] = ""
+    api_key_input = st.text_input("OpenAI API Key", type="password", value=st.session_state["openai_api_key"])
     if api_key_input:
         st.session_state["openai_api_key"] = api_key_input
 
@@ -213,7 +219,10 @@ if mode == "Chat":
         client = make_openai_client(st.session_state.get("openai_api_key"))
         reply = generate_reply(client, user_text)
         add_chat("assistant", reply)
-        st.audio(tts_gtts_bytes(reply), format="audio/mp3")
+        st.markdown(f"**assistant**: {reply}")
+        audio_bytes = tts_gtts_bytes(reply)
+        if audio_bytes:
+            st.audio(audio_bytes, format="audio/mp3")
         st.rerun()
 
 elif mode == "Chat history":
@@ -251,8 +260,7 @@ elif mode == "Call":
                 self.client = make_openai_client(st.session_state.get("openai_api_key"))
 
             def recv_audio(self, frame):
-                # Placeholder: just returns same audio back
-                # Future: integrate speech-to-text -> GPT -> TTS
+                # For now: just echo input audio
                 return frame
 
         webrtc_streamer(
@@ -262,7 +270,7 @@ elif mode == "Call":
             audio_processor_factory=EchoSoulProcessor,
             media_stream_constraints={"audio": True, "video": False},
         )
-        st.info("🎤 Speak into your mic. EchoSoul will echo audio. Next step: STT + GPT + TTS integration.")
+        st.info("🎤 Speak into your mic. EchoSoul will echo audio. GPT+TTS integration coming next.")
 
 elif mode == "About":
     st.header("ℹ️ About EchoSoul")
