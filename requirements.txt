@@ -1,4 +1,11 @@
 streamlit
+openai>=1.0.0
+cryptography
+sqlalchemy
+pandas
+numpy
+twilio
+aiortc
+av
 streamlit-webrtc
-openai
-pydub
+gTTS
