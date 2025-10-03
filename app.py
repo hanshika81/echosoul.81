@@ -1,11 +1,9 @@
-# EchoSoul - app.py (Final Fixed Version)
+# EchoSoul - app.py (Final full version with Call)
 
 import streamlit as st
 import sqlite3
-import json
 import os
 import io
-import time
 import base64
 from datetime import datetime
 from typing import Optional, Tuple
@@ -193,8 +191,12 @@ st.set_page_config(page_title="EchoSoul", layout="wide")
 
 with st.sidebar:
     st.title("EchoSoul")
-    mode = st.radio("Mode", ["Chat","Chat history","Life timeline","Vault","About"])
-    st.session_state["openai_api_key"] = st.text_input("OpenAI API Key", type="password")
+    mode = st.radio("Mode", ["Chat","Chat history","Life timeline","Vault","Call","About"])
+    
+    # ✅ FIX: Keep API key in session
+    api_key_input = st.text_input("OpenAI API Key", type="password")
+    if api_key_input:
+        st.session_state["openai_api_key"] = api_key_input
 
 
 # -------- Pages --------
@@ -226,7 +228,7 @@ elif mode == "Life timeline":
         ev_title = st.text_input("Event title")
         ev_details = st.text_area("Details")
         if st.form_submit_button("Add event"):
-            add_timeline_event(ev_title, ev_date.isoformat(), ev_details)  # ✅ fixed
+            add_timeline_event(ev_title, ev_date.isoformat(), ev_details)
             st.success("Event added")
             st.rerun()
     st.write("### Timeline")
@@ -238,6 +240,29 @@ elif mode == "Vault":
     pw = st.text_input("Vault password", type="password")
     if pw:
         st.info("Vault feature ready (encryption enabled).")
+
+elif mode == "Call":
+    st.header("📞 Live Call with EchoSoul")
+    if not WEBSOCKET_AVAILABLE:
+        st.error("streamlit-webrtc not installed. Please check requirements.")
+    else:
+        class EchoSoulProcessor(AudioProcessorBase):
+            def __init__(self):
+                self.client = make_openai_client(st.session_state.get("openai_api_key"))
+
+            def recv_audio(self, frame):
+                # Placeholder: just returns same audio back
+                # Future: integrate speech-to-text -> GPT -> TTS
+                return frame
+
+        webrtc_streamer(
+            key="echosoul-call",
+            mode=WebRtcMode.SENDRECV,
+            rtc_configuration=RTCConfiguration({"iceServers":[{"urls":["stun:stun.l.google.com:19302"]}]}),
+            audio_processor_factory=EchoSoulProcessor,
+            media_stream_constraints={"audio": True, "video": False},
+        )
+        st.info("🎤 Speak into your mic. EchoSoul will echo audio. Next step: STT + GPT + TTS integration.")
 
 elif mode == "About":
     st.header("ℹ️ About EchoSoul")
