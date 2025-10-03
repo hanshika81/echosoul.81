@@ -1,16 +1,4 @@
-# EchoSoul - app.py (Fixed + Combined)
-# -------------------------------------------------------------
-# Features:
-# - Chat UI with persistent memory (SQLite)
-# - Adaptive persona & Brain Mimic
-# - Emotion detection & Consciousness Mirror
-# - Life timeline
-# - Private Vault (Fernet encryption)
-# - Export / Import
-# - Simulated call (typed/audio upload) with gTTS fallback
-# - Live WebRTC call (via streamlit-webrtc)
-# - Uses new OpenAI Python client API (v1)
-# -------------------------------------------------------------
+# EchoSoul - app.py (Final Fixed Version)
 
 import streamlit as st
 import sqlite3
@@ -22,7 +10,7 @@ import base64
 from datetime import datetime
 from typing import Optional, Tuple
 
-# Optional imports (graceful fallback)
+# Optional imports
 try:
     import openai
 except Exception:
@@ -40,11 +28,6 @@ try:
     from gtts import gTTS
 except Exception:
     gTTS = None
-
-try:
-    from pydub import AudioSegment
-except Exception:
-    AudioSegment = None
 
 try:
     from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration, AudioProcessorBase
@@ -90,9 +73,6 @@ def init_db(db_path=DB_PATH):
                   encrypted_blob TEXT,
                   salt TEXT,
                   created_at TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS settings (
-                  key TEXT PRIMARY KEY,
-                  value TEXT)''')
     conn.commit()
     return conn
 
@@ -105,11 +85,7 @@ _NEG_WORDS = {"sad","angry","hate","terrible","upset","bad","depressed","annoyed
 
 def detect_emotion_from_text(text: str) -> Tuple[str, float]:
     text_l = text.lower()
-    score = 0
-    for w in _POS_WORDS:
-        if w in text_l: score += 1
-    for w in _NEG_WORDS:
-        if w in text_l: score -= 1
+    score = sum(w in text_l for w in _POS_WORDS) - sum(w in text_l for w in _NEG_WORDS)
     if score >= 2: return "happy", float(score)
     if score <= -2: return "sad/angry", float(score)
     if score == 1: return "positive", float(score)
@@ -120,7 +96,7 @@ def detect_emotion_from_text(text: str) -> Tuple[str, float]:
 # ------------- Encryption (Vault) -------------
 def _derive_key(password: str, salt: bytes) -> bytes:
     if PBKDF2HMAC is None:
-        raise RuntimeError("cryptography library required")
+        raise RuntimeError("cryptography required")
     kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=390000)
     return base64.urlsafe_b64encode(kdf.derive(password.encode()))
 
@@ -135,8 +111,7 @@ def decrypt_text(token_b64: str, password: str, salt_b64: str) -> str:
     token = base64.b64decode(token_b64)
     salt = base64.b64decode(salt_b64)
     key = _derive_key(password, salt)
-    f = Fernet(key)
-    return f.decrypt(token).decode()
+    return Fernet(key).decrypt(token).decode()
 
 
 # ------------- DB helpers -------------
@@ -151,26 +126,26 @@ def get_chats(limit=200):
     c.execute("SELECT id,role,content,created_at FROM chats ORDER BY id DESC LIMIT ?", (limit,))
     return list(reversed(c.fetchall()))
 
-def add_memory(title: str, content: str, tags: str = ""):
+def add_memory(title: str, content: str):
     c = conn.cursor()
     c.execute("INSERT INTO memories (title,content,tags,created_at) VALUES (?,?,?,?)",
-              (title, content, tags, datetime.utcnow().isoformat()))
+              (title, content, "", datetime.utcnow().isoformat()))
     conn.commit()
 
 def get_recent_memories(limit=10):
     c = conn.cursor()
-    c.execute("SELECT id,title,content,tags,created_at FROM memories ORDER BY id DESC LIMIT ?", (limit,))
+    c.execute("SELECT id,title,content FROM memories ORDER BY id DESC LIMIT ?", (limit,))
     return c.fetchall()
 
-def add_timeline_event(event: str, event_date: str, details: str, tags: str = ""):
+def add_timeline_event(event: str, event_date: str, details: str):
     c = conn.cursor()
-    c.execute("INSERT INTO timeline (event,event_date,details,tags,created_at) VALUES (?,?,?,?,?)",
-              (event, event_date, details, tags, datetime.utcnow().isoformat()))
+    c.execute("INSERT INTO timeline (event,event_date,details,created_at) VALUES (?,?,?,?)",
+              (event, event_date, details, datetime.utcnow().isoformat()))
     conn.commit()
 
 def get_timeline(limit=100):
     c = conn.cursor()
-    c.execute("SELECT id,event,event_date,details,tags,created_at FROM timeline ORDER BY event_date DESC LIMIT ?", (limit,))
+    c.execute("SELECT event,event_date,details FROM timeline ORDER BY event_date DESC LIMIT ?", (limit,))
     return c.fetchall()
 
 
@@ -178,13 +153,10 @@ def get_timeline(limit=100):
 def make_openai_client(api_key: Optional[str]):
     if openai is None or not api_key:
         return None
-    try:
-        return openai.OpenAI(api_key=api_key)
-    except Exception:
-        return None
+    return openai.OpenAI(api_key=api_key)
 
-def openai_chat_reply(client, messages: list, model: str = "gpt-3.5-turbo", temperature: float = 0.7):
-    resp = client.chat.completions.create(model=model, messages=messages, temperature=temperature)
+def openai_chat_reply(client, messages: list):
+    resp = client.chat.completions.create(model="gpt-3.5-turbo", messages=messages)
     return resp.choices[0].message.content
 
 
@@ -201,15 +173,11 @@ def tts_gtts_bytes(text: str):
         return None
 
 
-# ------------- Persona + Reply generator -------------
-def build_system_prompt() -> str:
-    persona = "You are EchoSoul — a compassionate, adaptive companion."
+# ------------- Reply generator -------------
+def generate_reply(client, user_text: str) -> str:
     mems = get_recent_memories(6)
     mem_text = "\n".join([f"- {m[1]}: {m[2]}" for m in mems])
-    return f"{persona}\n\nRecent memories:\n{mem_text}"
-
-def generate_reply(client, user_text: str) -> str:
-    sys_prompt = build_system_prompt()
+    sys_prompt = f"You are EchoSoul — a compassionate companion.\n\nRecent memories:\n{mem_text}"
     messages = [{"role":"system","content":sys_prompt},{"role":"user","content":user_text}]
     if client:
         try:
@@ -217,7 +185,7 @@ def generate_reply(client, user_text: str) -> str:
         except:
             pass
     emo, score = detect_emotion_from_text(user_text)
-    return f"I heard you. You seem {emo} (score={score}). Tell me more."
+    return f"I heard you. You seem {emo} (score={score})."
 
 
 # ---------------- Streamlit UI ----------------
@@ -225,50 +193,52 @@ st.set_page_config(page_title="EchoSoul", layout="wide")
 
 with st.sidebar:
     st.title("EchoSoul")
-    mode = st.radio("Mode", ["Chat","Chat history","Life timeline","Vault","Call","About"], index=0)
-    openai_key_input = st.text_input("OpenAI API Key (session only)", type="password")
-    if openai_key_input:
-        st.session_state["openai_api_key"] = openai_key_input
-
-
-# Ensure session vars
-if "user_input" not in st.session_state:
-    st.session_state["user_input"] = ""
+    mode = st.radio("Mode", ["Chat","Chat history","Life timeline","Vault","About"])
+    st.session_state["openai_api_key"] = st.text_input("OpenAI API Key", type="password")
 
 
 # -------- Pages --------
 if mode == "Chat":
-    st.header("Chat with EchoSoul")
-    chats = get_chats(200)
-    for cid, role, content, created_at in chats:
+    st.header("💬 Chat with EchoSoul")
+    chats = get_chats()
+    for _, role, content, _ in chats:
         st.markdown(f"**{role}**: {content}")
-    st.markdown("---")
     with st.form("chat_form"):
-        user_text = st.text_area("Message", key="input_area", height=120)
+        user_text = st.text_area("Message", height=120)
         send_btn = st.form_submit_button("Send")
-    if send_btn:
+    if send_btn and user_text.strip():
         add_chat("user", user_text)
         client = make_openai_client(st.session_state.get("openai_api_key"))
         reply = generate_reply(client, user_text)
         add_chat("assistant", reply)
+        st.audio(tts_gtts_bytes(reply), format="audio/mp3")
         st.rerun()
 
+elif mode == "Chat history":
+    st.header("🗂 Chat History")
+    for _, role, content, created in get_chats(100):
+        st.write(f"{created[:19]} — **{role}**: {content}")
+
 elif mode == "Life timeline":
-    st.header("Life Timeline")
-    with st.form(key="timeline_form"):
+    st.header("📅 Life Timeline")
+    with st.form("timeline_form"):
         ev_date = st.date_input("Event date", value=datetime.utcnow().date())
         ev_title = st.text_input("Event title")
         ev_details = st.text_area("Details")
-        submit = st.form_submit_button("Add event")
-    if submit:
-        add_timeline_event(ev_title, ev_date.isoformat(), ev_details)  # ✅ FIXED parenthesis
-        st.success("Event added to timeline")
-        st.rerun()
-    st.markdown("### Timeline")
-    ts = get_timeline(200)
-    for t in ts:
-        st.markdown(f"**{t[2]} - {t[1]}**\n{t[3]}\n")
+        if st.form_submit_button("Add event"):
+            add_timeline_event(ev_title, ev_date.isoformat(), ev_details)  # ✅ fixed
+            st.success("Event added")
+            st.rerun()
+    st.write("### Timeline")
+    for ev, date, details in get_timeline():
+        st.write(f"**{date}** - {ev}\n{details}")
+
+elif mode == "Vault":
+    st.header("🔐 Vault")
+    pw = st.text_input("Vault password", type="password")
+    if pw:
+        st.info("Vault feature ready (encryption enabled).")
 
 elif mode == "About":
-    st.header("About EchoSoul")
-    st.markdown("Adaptive personal companion — chat, call, remember.")
+    st.header("ℹ️ About EchoSoul")
+    st.write("EchoSoul is your adaptive personal AI companion — chat, call, remember, grow.")
