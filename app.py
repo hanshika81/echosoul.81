@@ -497,4 +497,4 @@ elif mode == 'Life timeline':
         ev_tags = st.text_input("Tags (comma separated)")
         submit = st.form_submit_button("Add event")
     if submit:
-        add_timeline_event(ev_title, ev_date.isoformat(), ev_details
+        add_timeline_event(ev_title, ev_date.isoformat(), ev_details)
